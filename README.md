@@ -29,6 +29,7 @@ python discord_cleanup_gui.py
 起動したウィンドウで以下を設定して実行します。
 
 - **Discordトークン**: 入力欄はデフォルトで伏字表示(「表示」チェックで平文表示に切り替え可能)
+- **対象範囲**: 「サーバー+DM」「サーバーのみ」「DMのみ」から選択(CLI版の`--scope`相当)
 - **開始日/終了日**: 任意。CLI版と同じくUTC基準
 - **繰り返し回数(passes) / パス間待機秒数**: CLI版の`--passes`/`--wait-between-passes`と同じ
 - **「一覧表示のみ」ボタン**: 削除せず対象を確認(CLI版の`--list`相当)
@@ -58,6 +59,7 @@ python discord_cleanup.py --delete --passes 3 --wait-between-passes 30 --start 2
 | `--delete` | どちらか必須 | 対象を実際に削除する |
 | `--start YYYY-MM-DD` | 任意 | この日付以降のメッセージ/イベントのみ対象(UTC基準) |
 | `--end YYYY-MM-DD` | 任意 | この日付まで(23:59:59 UTC)のメッセージ/イベントのみ対象 |
+| `--scope {all,guilds,dms}` | 任意(既定all) | `guilds`=サーバーのみ、`dms`=DMのみ、`all`=両方 |
 | `--passes N` | 任意(既定1) | 検索→削除をN回繰り返す。検索インデックスの反映ラグで1回目に見つからなかった分を後続パスで拾う |
 | `--wait-between-passes 秒数` | 任意(既定30) | パス間の待機秒数 |
 

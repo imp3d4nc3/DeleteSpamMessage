@@ -84,6 +84,19 @@ class App:
         ttk.Entry(frame, textvariable=self.end_var, width=20).grid(row=row, column=1, sticky=W, padx=5)
         row += 1
 
+        ttk.Label(frame, text="対象範囲:").grid(row=row, column=0, sticky=W)
+        self.scope_var = StringVar(value="all")
+        scope_frame = ttk.Frame(frame)
+        scope_frame.grid(row=row, column=1, columnspan=2, sticky=W, padx=5)
+        ttk.Radiobutton(scope_frame, text="サーバー+DM", variable=self.scope_var, value="all").pack(
+            side="left", padx=(0, 10)
+        )
+        ttk.Radiobutton(scope_frame, text="サーバーのみ", variable=self.scope_var, value="guilds").pack(
+            side="left", padx=(0, 10)
+        )
+        ttk.Radiobutton(scope_frame, text="DMのみ", variable=self.scope_var, value="dms").pack(side="left")
+        row += 1
+
         ttk.Label(frame, text="繰り返し回数(passes):").grid(row=row, column=0, sticky=W)
         self.passes_var = IntVar(value=1)
         ttk.Spinbox(frame, from_=1, to=10, textvariable=self.passes_var, width=5).grid(
@@ -171,6 +184,7 @@ class App:
             delete=is_delete,
             start=self.start_var.get().strip() or None,
             end=self.end_var.get().strip() or None,
+            scope=self.scope_var.get(),
         )
         passes = self.passes_var.get()
         wait_between = self.wait_var.get()
