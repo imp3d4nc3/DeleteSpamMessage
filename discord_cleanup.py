@@ -133,6 +133,11 @@ def _search_messages(url, token, author_id, label):
             print(f"  [{label}] 検索インデックス構築中、{retry_after}秒待って再試行します...")
             time.sleep(retry_after + 0.5)
             continue
+        if status in (401, 403, 404, 405):
+            # 権限不足/未対応エンドポイントなど、リトライしても解決しない恒久的なエラー。
+            # 待たずに即座に諦める。
+            print(f"  [{label}] このエンドポイントは利用できません (status={status})。スキップします。")
+            break
         if status != 200 or data is None:
             consecutive_errors += 1
             if consecutive_errors > 5:
@@ -178,19 +183,6 @@ def search_my_messages_in_channel(token, channel_id, author_id):
     """DMやグループDMなど、ギルドに属さないチャンネル内の自分のメッセージを検索する。"""
     return _search_messages(
         f"{API_BASE}/channels/{channel_id}/messages/search", token, author_id, f"dm:{channel_id}"
-    )
-
-
-def search_my_messages_globally(token, author_id):
-    """
-    /users/@me/messages/search はDiscordクライアントの「すべての場所を検索」機能が
-    使うエンドポイントで、DM一覧(/users/@me/channels)に出てこない「閉じたDM」
-    (相手がDMを開いていない、または自分がクライアントで閉じた場合など)も含めて
-    横断検索できる。ギルドのメッセージも含まれることがあるため、
-    guild検索の結果とは message id で重複排除して使う。
-    """
-    return _search_messages(
-        f"{API_BASE}/users/@me/messages/search", token, author_id, "global"
     )
 
 
@@ -367,24 +359,7 @@ def run_once(token, args, pass_no, total_passes):
             else:
                 channel_name_by_id[cid] = ch.get("name") or f"グループDM({cid})"
 
-        # /users/@me/channels に出てこない「閉じたDM」も拾うため、グローバル検索を実行し
-        # 既知のメッセージIDと重複しないものだけを追加で対象にする。
-        known_msg_ids = {msg["id"] for msgs in dm_results.values() for msg in msgs}
-        known_msg_ids |= {msg["id"] for msgs in guild_results.values() for msg in msgs}
-        print("グローバル検索中(開いていないDM等の取りこぼしを回収)...")
-        global_msgs = search_my_messages_globally(token, author_id)
-        extra_msgs_by_channel = {}
-        for msg in global_msgs:
-            if msg["id"] in known_msg_ids:
-                continue
-            known_msg_ids.add(msg["id"])
-            extra_msgs_by_channel.setdefault(msg["channel_id"], []).append(msg)
-        if extra_msgs_by_channel:
-            print(f"グローバル検索でのみ見つかったメッセージ: "
-                  f"{sum(len(v) for v in extra_msgs_by_channel.values())} 件"
-                  f"({len(extra_msgs_by_channel)} チャンネル、通常のDM一覧には出てこないもの)")
-
-        for cid, msgs_raw in list(dm_results.items()) + list(extra_msgs_by_channel.items()):
+        for cid, msgs_raw in dm_results.items():
             cname = channel_name_by_id.get(cid, cid)
             msgs = filter_by_date(msgs_raw, args.start, args.end)
             if msgs:
