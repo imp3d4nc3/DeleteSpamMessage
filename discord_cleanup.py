@@ -301,10 +301,17 @@ def run_once(token, args, pass_no, total_passes):
     author_id = me["id"]
     print(f"アカウント: {me['username']} (id={author_id})")
 
-    scope = getattr(args, "scope", "all")  # "all" / "guilds" / "dms"
+    scope = getattr(args, "scope", "all")  # "all" / "guilds" / "dms" / "friends"
     include_guilds = scope in ("all", "guilds")
-    include_dms = scope in ("all", "dms")
-    print(f"対象範囲: {'サーバー+DM' if scope == 'all' else ('サーバーのみ' if scope == 'guilds' else 'DMのみ')}")
+    include_open_dms = scope in ("all", "dms")
+    include_friend_dms = scope in ("all", "dms", "friends")
+    scope_label = {
+        "all": "サーバー+DM+フレンド",
+        "guilds": "サーバーのみ",
+        "dms": "DM(開いているもの)+フレンド",
+        "friends": "フレンドのみ",
+    }.get(scope, scope)
+    print(f"対象範囲: {scope_label}")
 
     total_msgs_found = total_msgs_deleted = 0
     total_events_found = total_events_deleted = 0
@@ -362,30 +369,35 @@ def run_once(token, args, pass_no, total_passes):
                 else:
                     total_events_deleted += delete_events_parallel(token, gid, my_events)
 
-    if include_dms:
-        dm_channels = get_dm_channels(token)
-        print(f"DM/グループDM数(開いているもの): {len(dm_channels)}")
+    if include_open_dms or include_friend_dms:
+        dm_channels = []
+        known_channel_ids = set()
 
-        known_channel_ids = {ch["id"] for ch in dm_channels}
-        friends = get_friends(token)
-        print(f"フレンド数: {len(friends)}")
-        if friends:
-            print("フレンドのDMチャンネルを確認中(未オープン/閉じたDMも回収)...")
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                future_to_friend = {
-                    executor.submit(open_dm_channel, token, f["id"]): f for f in friends
-                }
-                opened = 0
-                for future in as_completed(future_to_friend):
-                    friend = future_to_friend[future]
-                    ch = future.result()
-                    opened += 1
-                    print(f"  確認完了 {opened}/{len(friends)} フレンド", end="\r")
-                    if ch and ch.get("id") and ch["id"] not in known_channel_ids:
-                        known_channel_ids.add(ch["id"])
-                        dm_channels.append(ch)
-            print()
-            print(f"DM/グループDM数(フレンド分を含む合計): {len(dm_channels)}")
+        if include_open_dms:
+            dm_channels = get_dm_channels(token)
+            known_channel_ids = {ch["id"] for ch in dm_channels}
+            print(f"DM/グループDM数(開いているもの): {len(dm_channels)}")
+
+        if include_friend_dms:
+            friends = get_friends(token)
+            print(f"フレンド数: {len(friends)}")
+            if friends:
+                print("フレンドのDMチャンネルを確認中(未オープン/閉じたDMも回収)...")
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    future_to_friend = {
+                        executor.submit(open_dm_channel, token, f["id"]): f for f in friends
+                    }
+                    opened = 0
+                    for future in as_completed(future_to_friend):
+                        friend = future_to_friend[future]
+                        ch = future.result()
+                        opened += 1
+                        print(f"  確認完了 {opened}/{len(friends)} フレンド", end="\r")
+                        if ch and ch.get("id") and ch["id"] not in known_channel_ids:
+                            known_channel_ids.add(ch["id"])
+                            dm_channels.append(ch)
+                print()
+                print(f"DM/グループDM数(合計): {len(dm_channels)}")
 
         print("DMを検索中(並列処理)...")
 
@@ -443,8 +455,9 @@ def main():
     parser.add_argument("--start", help="この日付(YYYY-MM-DD)以降のメッセージのみ対象にする(乗っ取り開始日など)")
     parser.add_argument("--end", help="この日付(YYYY-MM-DD)以前のメッセージのみ対象にする(乗っ取り終了日=対応完了日など)")
     parser.add_argument(
-        "--scope", choices=["all", "guilds", "dms"], default="all",
-        help="対象範囲: all=サーバー+DM(既定), guilds=サーバーのみ, dms=DMのみ",
+        "--scope", choices=["all", "guilds", "dms", "friends"], default="all",
+        help="対象範囲: all=サーバー+DM+フレンド(既定), guilds=サーバーのみ, "
+             "dms=開いているDM+フレンド, friends=フレンドのDMのみ",
     )
     parser.add_argument(
         "--passes", type=int, default=1,

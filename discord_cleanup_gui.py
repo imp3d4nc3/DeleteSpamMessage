@@ -88,13 +88,18 @@ class App:
         self.scope_var = StringVar(value="all")
         scope_frame = ttk.Frame(frame)
         scope_frame.grid(row=row, column=1, columnspan=2, sticky=W, padx=5)
-        ttk.Radiobutton(scope_frame, text="サーバー+DM", variable=self.scope_var, value="all").pack(
+        ttk.Radiobutton(scope_frame, text="サーバー+DM+フレンド", variable=self.scope_var, value="all").pack(
             side="left", padx=(0, 10)
         )
         ttk.Radiobutton(scope_frame, text="サーバーのみ", variable=self.scope_var, value="guilds").pack(
             side="left", padx=(0, 10)
         )
-        ttk.Radiobutton(scope_frame, text="DMのみ", variable=self.scope_var, value="dms").pack(side="left")
+        ttk.Radiobutton(scope_frame, text="DM(開いているもの)+フレンド", variable=self.scope_var, value="dms").pack(
+            side="left", padx=(0, 10)
+        )
+        ttk.Radiobutton(scope_frame, text="フレンドのみ", variable=self.scope_var, value="friends").pack(
+            side="left"
+        )
         row += 1
 
         ttk.Label(frame, text="繰り返し回数(passes):").grid(row=row, column=0, sticky=W)
