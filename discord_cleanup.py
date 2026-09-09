@@ -179,6 +179,37 @@ def get_dm_channels(token):
     return data
 
 
+def get_friends(token):
+    """フレンド(相互フォロー済みの relationship type=1)一覧を取得する。"""
+    status, data = request("GET", f"{API_BASE}/users/@me/relationships", token)
+    if status != 200 or not data:
+        return []
+    return [r for r in data if r.get("type") == 1]
+
+
+def open_dm_channel(token, recipient_id):
+    """
+    フレンドとのDMチャンネルを取得(未作成なら作成)する。
+    /users/@me/channels の一覧には出てこない「一度も開いていない」「閉じた」DMでも、
+    このAPIを呼ぶだけでチャンネルIDが得られる(メッセージは送信されない)。
+    """
+    req = urllib.request.Request(
+        f"{API_BASE}/users/@me/channels", method="POST",
+        data=json.dumps({"recipient_id": recipient_id}).encode("utf-8"),
+    )
+    req.add_header("authorization", token)
+    req.add_header("content-type", "application/json")
+    req.add_header("user-agent", "Mozilla/5.0")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read()
+            return json.loads(body) if body else None
+    except urllib.error.HTTPError:
+        return None
+    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError):
+        return None
+
+
 def search_my_messages_in_channel(token, channel_id, author_id):
     """DMやグループDMなど、ギルドに属さないチャンネル内の自分のメッセージを検索する。"""
     return _search_messages(
@@ -334,6 +365,28 @@ def run_once(token, args, pass_no, total_passes):
     if include_dms:
         dm_channels = get_dm_channels(token)
         print(f"DM/グループDM数(開いているもの): {len(dm_channels)}")
+
+        known_channel_ids = {ch["id"] for ch in dm_channels}
+        friends = get_friends(token)
+        print(f"フレンド数: {len(friends)}")
+        if friends:
+            print("フレンドのDMチャンネルを確認中(未オープン/閉じたDMも回収)...")
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                future_to_friend = {
+                    executor.submit(open_dm_channel, token, f["id"]): f for f in friends
+                }
+                opened = 0
+                for future in as_completed(future_to_friend):
+                    friend = future_to_friend[future]
+                    ch = future.result()
+                    opened += 1
+                    print(f"  確認完了 {opened}/{len(friends)} フレンド", end="\r")
+                    if ch and ch.get("id") and ch["id"] not in known_channel_ids:
+                        known_channel_ids.add(ch["id"])
+                        dm_channels.append(ch)
+            print()
+            print(f"DM/グループDM数(フレンド分を含む合計): {len(dm_channels)}")
+
         print("DMを検索中(並列処理)...")
 
         dm_results = {}
