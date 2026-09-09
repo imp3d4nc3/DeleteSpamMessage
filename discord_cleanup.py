@@ -181,6 +181,19 @@ def search_my_messages_in_channel(token, channel_id, author_id):
     )
 
 
+def search_my_messages_globally(token, author_id):
+    """
+    /users/@me/messages/search はDiscordクライアントの「すべての場所を検索」機能が
+    使うエンドポイントで、DM一覧(/users/@me/channels)に出てこない「閉じたDM」
+    (相手がDMを開いていない、または自分がクライアントで閉じた場合など)も含めて
+    横断検索できる。ギルドのメッセージも含まれることがあるため、
+    guild検索の結果とは message id で重複排除して使う。
+    """
+    return _search_messages(
+        f"{API_BASE}/users/@me/messages/search", token, author_id, "global"
+    )
+
+
 def delete_message(token, channel_id, message_id):
     status, _ = request("DELETE", f"{API_BASE}/channels/{channel_id}/messages/{message_id}", token)
     # 404は既に(モデレーター等により)削除済みという意味なので成功扱いにする
@@ -197,6 +210,43 @@ def list_scheduled_events(token, guild_id):
 def delete_scheduled_event(token, guild_id, event_id):
     status, _ = request("DELETE", f"{API_BASE}/guilds/{guild_id}/scheduled-events/{event_id}", token)
     return status in (200, 204, 404)
+
+
+def delete_messages_parallel(token, msgs, max_workers=6):
+    """
+    複数メッセージを並列に削除する。request()側で429(レートリミット)を
+    検知して自動的に待機・再試行するため、ここでは固定sleepを入れず
+    ワーカー数で全体のスループットを制御する。
+    """
+    deleted = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_msg = {
+            executor.submit(delete_message, token, msg["channel_id"], msg["id"]): msg
+            for msg in msgs
+        }
+        for future in as_completed(future_to_msg):
+            msg = future_to_msg[future]
+            ok = future.result()
+            print(f"  - {'削除済み' if ok else '削除失敗'}: channel={msg['channel_id']} msg={msg['id']}")
+            if ok:
+                deleted += 1
+    return deleted
+
+
+def delete_events_parallel(token, guild_id, events, max_workers=6):
+    deleted = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_ev = {
+            executor.submit(delete_scheduled_event, token, guild_id, ev["id"]): ev
+            for ev in events
+        }
+        for future in as_completed(future_to_ev):
+            ev = future_to_ev[future]
+            ok = future.result()
+            print(f"  - {'削除済み' if ok else '削除失敗'}: event={ev['id']} name={ev.get('name', '')!r}")
+            if ok:
+                deleted += 1
+    return deleted
 
 
 def filter_by_date(messages, start_date, end_date):
@@ -264,38 +314,26 @@ def run_once(token, args, pass_no, total_passes):
         if msgs:
             print(f"[{gname}] 自分のメッセージ {len(msgs)} 件を検出")
             total_msgs_found += len(msgs)
-            for msg in msgs:
-                channel_id = msg["channel_id"]
-                msg_id = msg["id"]
-                preview = (msg.get("content") or "")[:50]
-                if args.list:
-                    print(f"  - channel={channel_id} msg={msg_id} content={preview!r}")
-                else:
-                    ok = delete_message(token, channel_id, msg_id)
-                    print(f"  - {'削除済み' if ok else '削除失敗'}: channel={channel_id} msg={msg_id}")
-                    if ok:
-                        total_msgs_deleted += 1
-                    time.sleep(0.25)
+            if args.list:
+                for msg in msgs:
+                    preview = (msg.get("content") or "")[:50]
+                    print(f"  - channel={msg['channel_id']} msg={msg['id']} content={preview!r}")
+            else:
+                total_msgs_deleted += delete_messages_parallel(token, msgs)
 
         events = guild_events.get(gid, [])
         my_events = [e for e in events if e.get("creator_id") == author_id]
         if my_events:
             print(f"[{gname}] 自分が作成したイベント {len(my_events)} 件を検出")
             total_events_found += len(my_events)
-            for ev in my_events:
-                ev_id = ev["id"]
-                ev_name = ev.get("name", "")
-                if args.list:
-                    print(f"  - event={ev_id} name={ev_name!r}")
-                else:
-                    ok = delete_scheduled_event(token, gid, ev_id)
-                    print(f"  - {'削除済み' if ok else '削除失敗'}: event={ev_id} name={ev_name!r}")
-                    if ok:
-                        total_events_deleted += 1
-                    time.sleep(0.25)
+            if args.list:
+                for ev in my_events:
+                    print(f"  - event={ev['id']} name={ev.get('name', '')!r}")
+            else:
+                total_events_deleted += delete_events_parallel(token, gid, my_events)
 
     dm_channels = get_dm_channels(token)
-    print(f"DM/グループDM数: {len(dm_channels)}")
+    print(f"DM/グループDM数(開いているもの): {len(dm_channels)}")
     print("DMを検索中(並列処理)...")
 
     dm_results = {}
@@ -312,30 +350,44 @@ def run_once(token, args, pass_no, total_passes):
             print(f"  検索完了 {done}/{len(dm_channels)} DM", end="\r")
         print()
 
+    channel_name_by_id = {}
     for ch in dm_channels:
         cid = ch["id"]
         if ch.get("type") == 1:
             recipients = ch.get("recipients") or []
-            cname = recipients[0].get("username", cid) if recipients else cid
+            channel_name_by_id[cid] = recipients[0].get("username", cid) if recipients else cid
         else:
-            cname = ch.get("name") or f"グループDM({cid})"
+            channel_name_by_id[cid] = ch.get("name") or f"グループDM({cid})"
 
-        msgs = filter_by_date(dm_results.get(cid, []), args.start, args.end)
+    # /users/@me/channels に出てこない「閉じたDM」も拾うため、グローバル検索を実行し
+    # 既知のメッセージIDと重複しないものだけを追加で対象にする。
+    known_msg_ids = {msg["id"] for msgs in dm_results.values() for msg in msgs}
+    known_msg_ids |= {msg["id"] for msgs in guild_results.values() for msg in msgs}
+    print("グローバル検索中(開いていないDM等の取りこぼしを回収)...")
+    global_msgs = search_my_messages_globally(token, author_id)
+    extra_msgs_by_channel = {}
+    for msg in global_msgs:
+        if msg["id"] in known_msg_ids:
+            continue
+        known_msg_ids.add(msg["id"])
+        extra_msgs_by_channel.setdefault(msg["channel_id"], []).append(msg)
+    if extra_msgs_by_channel:
+        print(f"グローバル検索でのみ見つかったメッセージ: "
+              f"{sum(len(v) for v in extra_msgs_by_channel.values())} 件"
+              f"({len(extra_msgs_by_channel)} チャンネル、通常のDM一覧には出てこないもの)")
+
+    for cid, msgs_raw in list(dm_results.items()) + list(extra_msgs_by_channel.items()):
+        cname = channel_name_by_id.get(cid, cid)
+        msgs = filter_by_date(msgs_raw, args.start, args.end)
         if msgs:
             print(f"[DM:{cname}] 自分のメッセージ {len(msgs)} 件を検出")
             total_msgs_found += len(msgs)
-            for msg in msgs:
-                channel_id = msg["channel_id"]
-                msg_id = msg["id"]
-                preview = (msg.get("content") or "")[:50]
-                if args.list:
-                    print(f"  - channel={channel_id} msg={msg_id} content={preview!r}")
-                else:
-                    ok = delete_message(token, channel_id, msg_id)
-                    print(f"  - {'削除済み' if ok else '削除失敗'}: channel={channel_id} msg={msg_id}")
-                    if ok:
-                        total_msgs_deleted += 1
-                    time.sleep(0.25)
+            if args.list:
+                for msg in msgs:
+                    preview = (msg.get("content") or "")[:50]
+                    print(f"  - channel={msg['channel_id']} msg={msg['id']} content={preview!r}")
+            else:
+                total_msgs_deleted += delete_messages_parallel(token, msgs)
 
     print("\n===== サマリー =====")
     print(f"検出したメッセージ: {total_msgs_found} 件")
